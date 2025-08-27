@@ -1,76 +1,61 @@
 package pay.assignment.ratelimit
 
 import org.springframework.stereotype.Component
-import java.time.LocalDateTime
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 interface RateLimiter {
     fun isAllowed(userId: UserId, requestInformation: RequestInformation, rule: RateLimitRule): Boolean
 }
 
 data class RequestInformation(
-    val timestamp: LocalDateTime
+    val timestamp: Instant
 )
 
 data class UserId(val id: String)
 
 data class RateLimitRule(
-   val maxRequest: Int,
-   val timeWindowSeconds: Int
+    val maxRequest: Int,
+    val timeWindowSeconds: Int
 )
 
 @Component
-class UserIdRateLimiter(
-    private val windows: ConcurrentHashMap<UserId, FixedTimeWindow> = ConcurrentHashMap()
+class SlidingWindowRateLimiter(
+    private val windows: ConcurrentHashMap<UserId, SlidingWindow> = ConcurrentHashMap()
 ) : RateLimiter {
-
 
     override fun isAllowed(
         userId: UserId,
         requestInformation: RequestInformation,
-        rule: RateLimitRule,
+        rule: RateLimitRule
     ): Boolean {
+        val currentTime = requestInformation.timestamp.epochSecond
+        val window = windows.computeIfAbsent(userId) { SlidingWindow(rule.timeWindowSeconds) }
 
-        val currentTime = requestInformation.timestamp
-        val window = windows.computeIfAbsent(userId) { FixedTimeWindow(currentTime) }
-
-        synchronized(userId) {
-            return window.isAcceptable(requestInformation, rule)
-        }
+        return window.tryAcquire(currentTime, rule.maxRequest)
     }
 }
 
-class FixedTimeWindow(
-    private var startTime: LocalDateTime,
-    private var requestCount: Int = 0
-) {
+class SlidingWindow(private val timeWindowSeconds: Int) {
+    private val requestTimestamps = ConcurrentHashMap<Long, AtomicInteger>()
 
-    fun isAcceptable(requestInformation: RequestInformation, rule: RateLimitRule): Boolean {
-        if (isWithinWindow(requestInformation.timestamp, rule.timeWindowSeconds)) {
-            if (requestCount < rule.maxRequest) {
-                increment()
-                return true
-            } else {
-                return false
-            }
+    fun tryAcquire(currentTime: Long, maxRequest: Int): Boolean {
+        cleanup(currentTime)
+
+        val currentWindow = currentTime / timeWindowSeconds
+        val count = requestTimestamps.computeIfAbsent(currentWindow) { AtomicInteger(0) }
+
+        return if (count.incrementAndGet() <= maxRequest) {
+            true
         } else {
-            reset(requestInformation.timestamp)
-            return true
+            count.decrementAndGet()
+            false
         }
     }
 
-    fun isWithinWindow(currentTime: LocalDateTime, windowSeconds: Int): Boolean {
-        return !currentTime.isBefore(startTime) && currentTime.isBefore(startTime.plusSeconds(windowSeconds.toLong()))
-    }
-
-    fun getRequestCount(): Int = requestCount
-
-    fun increment() {
-        requestCount++
-    }
-
-    fun reset(startTime: LocalDateTime) {
-        this.startTime = startTime
-        this.requestCount = 1
+    private fun cleanup(currentTime: Long) {
+        val expirationTime = currentTime - timeWindowSeconds
+        requestTimestamps.keys.removeIf { it < expirationTime / timeWindowSeconds }
     }
 }
