@@ -26,36 +26,23 @@ data class Decision(
 data class StateKey(val userId: UserId, val windowSeconds: Int)
 
 /**
- * 고정 윈도우 상태 (전역 고정 경계)
+ * 고정 윈도우 상태 (드래프트 텀플링)
  * - windowStartMs: 이 상태가 현재 보고 있는 윈도우의 "시작 시각(ms)". ex) floor(now/windowMs)*windowMs
  * - count: 해당 창에서 허용된 요청 수
  * - lastSeenMillis: TTL 청소용
  *
  * 경계 규칙: [windowStartMs, windowStartMs + windowMs)
  */
-data class FixedWindowState(
+data class DriftWindowState(
     var windowStartMs: Long,
     var count: Int,
     var lastSeenMillis: Long
 ) {
     companion object {
-        fun init(nowMs: Long, windowMs: Long) =
-            FixedWindowState(snapToWindowStart(nowMs, windowMs), 0, nowMs)
-
-        fun snapToWindowStart(tsMs: Long, windowMs: Long): Long =
-            (tsMs / windowMs) * windowMs
-
-        fun nextWindowStartMs(windowStartMs: Long, windowMs: Long): Long =
-            windowStartMs + windowMs
+        fun init(nowMs: Long) =
+            DriftWindowState(nowMs, 0, nowMs)
     }
 
-    /**
-     * 같은 State에 대해서만 동시 접근되도록 바깥에서 synchronized(state) 보장.
-     * 판정은:
-     * 1) 현재 now가 속한 창의 시작시각(currentStart)을 계산
-     * 2) 상태의 windowStartMs와 다르면 창 교체(카운트 리셋)
-     * 3) count < limit 이면 허용하고 증가, 아니면 거절 + retryAfter 계산
-     */
     fun decide(nowMs: Long, windowMs: Long, limit: Int): Decision {
         rollingWindowIfNeeded(nowMs, windowMs)
 
@@ -90,27 +77,24 @@ data class FixedWindowState(
 
     private fun calculateRetryAfter(allowed: Boolean, windowMs: Long, nowMs: Long): Long {
         return if (allowed) 0L
-        else (nextWindowStartMs(windowStartMs, windowMs) - nowMs).coerceAtLeast(0L)
+        else (nextWindowStartMs(windowMs, nowMs)).coerceAtLeast(0L)
     }
 
+    private fun nextWindowStartMs(windowMs: Long, nowMs: Long): Long =
+        (windowStartMs + windowMs) - nowMs
+
     private fun rollingWindowIfNeeded(nowMs: Long, windowMs: Long) {
-        val currentStart = snapToWindowStart(nowMs, windowMs)
-        if (currentStart != windowStartMs) {
-            windowStartMs = currentStart
+        if(nowMs - windowStartMs >= windowMs){
+            windowStartMs = nowMs
             count = 0
         }
     }
 }
 
-/**
- * 타임스탬프(ms)만으로 판단하는 고정 윈도우 리미터 (전역 고정 경계).
- * - 상태 로직은 FixedWindowState로 캡슐화
- * - per-state synchronized로 간단히 직렬화
- * - Clock 주입으로 테스트 용이
- */
+
 class FixedWindowLimiter(
     private val clock: Clock = Clock.systemUTC(),
-    private val states: ConcurrentHashMap<StateKey, FixedWindowState> = ConcurrentHashMap()
+    private val states: ConcurrentHashMap<StateKey, DriftWindowState> = ConcurrentHashMap()
 ) : RateLimiter {
 
     override fun check(userId: UserId, rule: RateLimitRule): Decision {
@@ -122,7 +106,7 @@ class FixedWindowLimiter(
         val windowMs = rule.timeWindowSeconds * 1000L
         val key = StateKey(userId, rule.timeWindowSeconds)
 
-        val state = states.computeIfAbsent(key) { FixedWindowState.init(nowMs, windowMs) }
+        val state = states.computeIfAbsent(key) { DriftWindowState.init(nowMs) }
 
         return synchronized(state) {
             state.decide(nowMs, windowMs, rule.maxRequest)
