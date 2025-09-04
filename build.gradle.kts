@@ -24,6 +24,20 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-aop")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
+    
+    // Redis 관련 의존성
+    implementation("org.springframework.boot:spring-boot-starter-data-redis")
+    
+    // Spring Cloud Gateway (Redis RateLimiter 용)
+    implementation("org.springframework.cloud:spring-cloud-starter-gateway:4.1.5")
+    
+    // Redisson (분산 Rate Limiter)
+    implementation("org.redisson:redisson-spring-boot-starter:3.35.0")
+    
+    // Bucket4j (Token Bucket 알고리즘)
+    implementation("com.bucket4j:bucket4j-core:8.10.1")
+    implementation("com.bucket4j:bucket4j-redis:8.10.1")
+    implementation("com.bucket4j:bucket4j-spring-boot-starter:8.10.1")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
